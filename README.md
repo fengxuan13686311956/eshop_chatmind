@@ -79,7 +79,8 @@ eshop_chatmind/
 **问题**：Agent 直接生成 SQL 时可能凭空捏造林名，导致查询失败。
 
 **方案**：
-方案一：参考Mars-SQL工作，将自然语言转 SQL 的任务分解为两步：
+
+**方案一**：参考Mars-SQL工作，将自然语言转 SQL 的任务分解为两步：
 
 1. 先调用 `getTableSchema` 查询 `information_schema.columns`，获取真实表结构和列名
 2. 结合用户自然语言提取查询条件和目标列
@@ -91,7 +92,7 @@ eshop_chatmind/
 |------|------|
 | [DataBaseTools.java](eshop_chatmind/src/main/java/com/fx/eshop_chatmind/agent/tools/DataBaseTools.java) | 新增 `getTableSchema` 方法；更新 `databaseQuery` 的 Tool description |
 
-方案二：加入了专门的数据库说明文档a992ede0-ce57-455c-8867-674c33e6eae6.md,包含对每个表格、表格列的解释说明。
+**方案二**：加入了专门的数据库说明文档a992ede0-ce57-455c-8867-674c33e6eae6.md,包含对每个表格、表格列的解释说明。
 
 ---
 
