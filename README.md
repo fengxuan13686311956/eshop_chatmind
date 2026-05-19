@@ -1,4 +1,4 @@
-# eshop_chatmind — AI 智能体助手
+# eshop_chatmind — 电商智能客服Agent
 
 eshop_chatmind 是一个基于 **Spring AI** 框架构建的智能 AI Agent 系统，实现了自主决策、工具调用和知识库检索（RAG）等核心能力。系统通过分层架构 + Agent 核心服务，将 AI 能力（模型、RAG、工具）抽象成可组合、可扩展的系统模块。
 
