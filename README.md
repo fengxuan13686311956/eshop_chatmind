@@ -91,7 +91,7 @@ eshop_chatmind/
 |------|------|
 | [DataBaseTools.java](eshop_chatmind/src/main/java/com/fx/eshop_chatmind/agent/tools/DataBaseTools.java) | 新增 `getTableSchema` 方法；更新 `databaseQuery` 的 Tool description |
 
-方案二：加入了专门的数据库说明文档doc/database,包含对每个表格、表格列的解释说明。
+方案二：加入了专门的数据库说明文档a992ede0-ce57-455c-8867-674c33e6eae6.md,包含对每个表格、表格列的解释说明。
 ---
 
 ### 改进二：知识库自动同步（基于内容 Hash）
