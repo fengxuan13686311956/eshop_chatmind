@@ -1,219 +1,385 @@
+# eshop_chatmind — AI 智能体助手
+
+eshop_chatmind 是一个基于 **Spring AI** 框架构建的智能 AI Agent 系统，实现了自主决策、工具调用和知识库检索（RAG）等核心能力。系统通过分层架构 + Agent 核心服务，将 AI 能力（模型、RAG、工具）抽象成可组合、可扩展的系统模块。
 
-# AI智能体助手-JChatMind
+---
 
-最近很多录友在做 AI 项目，但我发现一个普遍问题：
+## 目录
 
-简历写着“接入大模型、实现聊天”。
+- [项目架构](#项目架构)
+- [Agent 引擎设计](#agent-引擎设计)
+- [工具系统](#工具系统)
+- [知识库与 RAG 检索](#知识库与-rag-检索)
+- [多模型支持](#多模型支持)
+- [改进记录](#改进记录)
+- [Quick Start](#quick-start)
 
-面试官一句话就能给你问懵：“**那你到底做了什么？不就是调 API 吗**？”
+---
 
-一个聊天对话框和agent 是有区别的。
+## 项目架构
 
-我这次在[知识星球](https://programmercarl.com/other/kstar.html)里**更新一个Java Agent项目**：JChatMind（AI智能体助手）
+```
+eshop_chatmind/
+├── agent/                  # Agent 核心引擎
+│   ├── tools/              # 工具集（FIXED / OPTIONAL）
+│   │   ├── KnowledgeTools  # 知识库混合检索
+│   │   ├── DataBaseTools   # 数据库查询（两步SQL生成）
+│   │   ├── EmailTools      # 异步邮件发送
+│   │   ├── FileSystemTools # 文件系统操作
+│   │   ├── TerminateTool   # 终止任务
+│   │   └── DirectAnswerTool# 直接回答
+│   ├── eshop_chatmind.java       # Agent 运行时（Think-Execute 循环）
+│   ├── eshop_chatmindFactory.java # Agent 工厂（依赖组装）
+│   └── AgentState.java    # Agent 状态机
+├── config/                 # 配置（多模型、异步、CORS）
+├── controller/             # REST API 层
+├── converter/              # DTO ↔ Entity 转换
+├── mapper/                 # MyBatis Mapper（数据访问）
+├── model/                  # 数据模型（entity/dto/vo/request/response）
+├── service/                # 业务服务层
+│   ├── RagService          # RAG 检索（向量 + BM25 混合检索）
+│   ├── KeywordSearchService # BM25 + jieba 关键词检索
+│   ├── KnowledgeBaseSyncService # 知识库自动同步
+│   ├── MarkdownParserService    # Markdown 解析分块
+│   └── impl/               # 服务实现
+├── event/                  # SSE 事件推送
+└── typehandler/            # pgvector 类型处理器
+```
 
-JChatMind 是一个智能 AI Agent 系统，基于 Spring AI 框架构建，实现了自主决策、工具调用和知识库检索等核心能力。
+### 分层设计
 
-系统采用 **Think-Execute 循环机制，能够理解复杂任务、规划执行步骤、调用外部工具，并基于 RAG 技术从知识库中检索相关信息，完成多步骤的复杂任务**。
+| 层 | 职责 |
+|----|------|
+| **Controller** | REST API，接收请求并委托给 FacadeService |
+| **FacadeService** | 业务编排层，协调 Converter + Mapper |
+| **Mapper** | MyBatis 数据访问，操作 PostgreSQL |
+| **Agent Engine** | Agent 生命周期管理：Think → Execute 循环 |
+| **Tool System** | 可插拔工具集，Spring AI MethodToolCallback 自动发现 |
 
-它不是“聊天机器人”，而是 Agent：**能规划、能调用工具、能检索知识库、还能把执行过程实时推给前端**。
+---
 
-你做完它，面试官再问 AI 项目，你能讲的就不是“我接了个接口”，而是：
+## Agent 引擎设计
 
-* 我实现了 Think-Execute 循环（自主决策）
-* 我实现了 工具调用框架（可扩展）
-* 我实现了 RAG + 向量检索（pgvector）
-* 我实现了 多模型切换架构（注册表模式）
-* 我实现了 SSE 实时推送（执行状态可视化）
+### Think-Execute 循环（ReAct 模式）
 
-### 项目演示
+```
+用户提问 → Think（决策）→ Execute（执行工具）→ Think → ... → 完成
+```
 
-![image](https://file1.kamacoder.com/i/web/2026-01-09_16-30-36.jpg)
+- **Think 阶段**：Agent 根据对话上下文和 thinkPrompt，决定是否调用工具、调用哪个工具
+- **Execute 阶段**：通过 Spring AI ToolCallingManager 执行工具调用，将结果写回对话记忆
+- 循环最多 20 步，超限自动终止
+- 工具调用和 AI 回复通过 SSE 实时推送到前端
 
-![image](https://file1.kamacoder.com/i/web/2026-01-09_16-31-19.jpg)
+### 对话记忆管理
 
-![image](https://file1.kamacoder.com/i/web/2026-01-09_16-31-49.jpg)
+- 基于 Spring AI `MessageWindowChatMemory`，保留最近 N 条消息
+- 每次对话从数据库恢复记忆，工具调用结果也持久化
+- `SystemMessage` → `UserMessage` → `AssistantMessage` → `ToolResponseMessage` 循环
 
-![image](https://file1.kamacoder.com/i/web/2026-01-09_16-32-08.jpg)
+### Agent 状态机
 
-### 项目专栏目录
+```
+IDLE → THINKING → EXECUTING → FINISHED / ERROR
+```
 
-![](https://file1.kamacoder.com/i/web/2026-01-08_10-43-35.jpg)
+---
 
-从理论基础：agent的基本概念
+## 工具系统
 
-到项目实战：大模型怎么用、环境怎么搭，Agent loop如何设计，怎么引入知识库与RAG，以及MCP
+工具分为两种类型，通过 Spring 依赖注入自动收集：
 
-最后再到求职相关：项目的简历写法、项目亮点、本项目常见面试题，都给大家准备好了。
+| 类型 | 说明 | 示例 |
+|------|------|------|
+| **FIXED** | 所有 Agent 强制拥有 | KnowledgeTool、TerminateTool |
+| **OPTIONAL** | 按 Agent 配置选择性启用 | DataBaseTools、EmailTools、FileSystemTools |
 
-从**项目源码到答疑，一条龙服务，不用担心学不会，有什么问题都可以在专属微信群提问**：（[知识星球](https://programmercarl.com/other/kstar.html)里每个项目都有专属答疑群）
+### 工具详解
 
-![](https://file1.kamacoder.com/i/web/2026-01-08_10-59-23.jpg)
+#### KnowledgeTool（固定工具）—— 知识库混合检索
 
-### 项目架构图
+结合**向量语义检索**和 **BM25 关键词检索**，通过 RRF（Reciprocal Rank Fusion）融合排序，返回最相关的知识片段。
 
-![](https://file1.kamacoder.com/i/web/2026-01-08_11-19-14.jpg)
+- 输入：知识库 ID + 查询文本
+- 输出：融合排序后的 top5 内容片段
 
-JChatMind 通过分层架构 + Agent 核心服务，把 AI 能力（模型、RAG、工具）抽象成可组合、可扩展的系统模块
+#### DataBaseTools（可选工具）—— 数据库查询
 
-### 获取本专栏
+**两步式 SQL 生成**，防止 AI 凭空捏造列名：
 
-扫如下十元代金券，只需要 196元，加入[知识星球](https://programmercarl.com/other/kstar.html)，你将**获取20+套项目教程的专栏+源码+配套答疑**： （每个项目不到十元钱，而且**加入星球的服务远不止就这些项目**！）
+1. **`getTableSchema`**：查询 `information_schema.columns`，返回所有表名、列名、列类型
+2. **`databaseQuery`**：基于真实表结构生成并执行 SELECT 查询
 
-如果不知道[知识星球](https://programmercarl.com/other/kstar.html)对自己是否有帮助，可以进来看看，感受一下星球里的学习氛围，**三天（72h）内可以全额退款**！
+仅允许 SELECT，自动拦截非只读语句。
 
-知识星球APP右上角 自己申请退款，一个小时到账 全程无套路， **记得是三天内（72h）才能退款**。
+#### EmailTools（可选工具）—— 异步邮件发送
 
-### 项目专栏细节
+通过 QQ 邮箱 SMTP 异步发送邮件，不阻塞 Agent 循环。
 
-理论知识讲解：
+- 输入：收件人、主题、正文
+- 支持邮箱格式校验，异步执行不阻塞
 
-![](https://file1.kamacoder.com/i/web/2026-01-08_11-02-38.jpg)
+#### FileSystemTools（可选工具）—— 文件系统操作
 
-循序渐进，带你做agent实战开发：
+提供文件读写、目录管理功能，内置路径遍历攻击防护。
 
-![](https://file1.kamacoder.com/i/web/2026-01-08_11-03-33.jpg)
+- `readFile` / `writeFile` / `appendToFile` — 文件读写
+- `listFiles` — 目录列表
+- `createDirectory` / `deleteFile` — 目录/文件管理
+- 所有路径限制在项目工作目录内，防止越权访问
 
-![](https://file1.kamacoder.com/i/web/2026-01-08_11-03-57.jpg)
+#### TerminateTool（固定工具）—— 终止任务
 
-![](https://file1.kamacoder.com/i/web/2026-01-08_11-03-57.jpg)
+Agent 判断任务完成后调用，跳出 Think-Execute 循环。
 
-![](https://file1.kamacoder.com/i/web/2026-01-08_11-04-20.jpg)
+#### DirectAnswerTool（固定工具）—— 直接回答
 
-![](https://file1.kamacoder.com/i/web/2026-01-08_11-04-41.jpg)
+适用于无需工具调用的纯对话场景。
 
-最后，求职相关，简历写法、相关面试题，技术亮点 都安排的明明白白：
+---
 
-**技术亮点、性能指标、功能指标、技术指标**，都给大家列出，甚至，不同岗位（后端、算法、大模型）使用这个项目的简历写法，都列出来，让面试没有死角：
+## 知识库与 RAG 检索
 
-![](https://file1.kamacoder.com/i/web/2026-01-08_11-05-09.jpg)
+### 文档处理流水线
 
-**技术选型的理由、技术难点、解决方案、技术成长点、深入解析计数原理**：
+```
+上传 Markdown → 解析标题/章节 → 对标题做 Embedding（bge-m3）→ 存入 pgvector
+```
 
-![](https://file1.kamacoder.com/i/web/2026-01-08_11-11-08.jpg)
+- **MarkdownParserService**：基于 flexmark 解析，提取每个 `# 标题` 及其下属内容（含表格原始格式）
+- **Embedding**：通过 Ollama 本地部署的 `bge-m3` 模型生成向量
+- **存储**：PostgreSQL + pgvector 扩展，按知识库 ID 隔离
 
-针对项目原理和项目实现都准备了相关面试题
+### 混合检索（Hybrid RAG）
 
-项目原理面试题以及回答：
-![](https://file1.kamacoder.com/i/web/2026-01-08_11-15-22.jpg)
+检索流程结合两种互补策略：
 
-项目实战面试题以及回答：
-![](https://file1.kamacoder.com/i/web/2026-01-08_11-14-09.jpg)
+| 策略 | 引擎 | 优势 |
+|------|------|------|
+| **语义检索** | pgvector cosine 距离 | 捕获语义相近但用词不同的内容 |
+| **关键词检索** | BM25 + jieba 分词 | 精确命中关键词，适合专有名词查询 |
 
+融合方式：**Reciprocal Rank Fusion (RRF)**，两边各取 top5，按 RRF 分数重排后返回 top5。
 
-### 项目亮点
+### 知识库自动同步（基于内容 Hash）
 
-1、**真正的 Agent Loop（Think-Execute 循环 + 状态机**）
+通过 `POST /api/knowledge-bases/{id}/sync` 触发，基于文件 SHA-256 检测变更：
 
-不是“调用一次大模型就结束”，而是支持：
+| 检测结果 | 操作 |
+|----------|------|
+| **新增**（无 Hash 记录） | 解析 Markdown → 分块 → Embedding → 写入向量库 |
+| **修改**（Hash 不一致） | 删除旧分块 → 重新解析 → 重新 Embedding → 写入 |
+| **删除**（文件不存在） | 清理向量分块 + 文档记录 |
+| **未变更**（Hash 一致） | 跳过 |
 
-* 多轮规划
-* 多轮工具调用
-* 状态管理（THINKING / EXECUTING / DONE / ERROR）
-* 错误处理与最大步数控制（防止无限循环）
+文档上传时自动计算并保存 SHA-256 哈希。
 
-这里的技术点：“怎么避免 Agent 无限调用工具？怎么做状态管理？怎么做超时控制？”
+---
 
-2、**工具系统（固定工具 + 可选工具，可扩展、可治理**）
+## 多模型支持
 
-很多人做工具调用只是“写几个 if else”，JChatMind 的工具系统是“框架化”的：
+通过 `ChatClientRegistry` + `MultiChatClientConfig` 支持多模型热切换：
 
-* 工具自动注册
-* 固定工具 / 可选工具分类管理
-* 可扩展：新增工具不改核心流程
-* 可控：禁用 Spring AI 自动执行，改为手动管理 ToolCalling 流程
+| 模型 | Bean 名称 | 提供商 |
+|------|-----------|--------|
+| DeepSeek-Chat | `deepseek-chat` | DeepSeek |
+| GLM-4.6 | `glm-4.6` | 智谱 AI |
 
-这里的技术点：“工具调用怎么做扩展？工具失败怎么处理？工具返回结果怎么进入对话历史？”
+每个 Agent 在创建时指定模型，ChatClientRegistry 根据模型名路由到对应的 ChatClient。
 
-这就是讲“系统设计”的地方。
+---
 
-3、**RAG 知识库（PostgreSQL + pgvector**）
+## 前端
 
-RAG 不是 PPT 概念，JChatMind 是完整链路：
+前端位于 `ui/` 目录，使用 React + TypeScript + Vite + Ant Design + Tailwind CSS 构建：
 
-* Markdown 文档解析、分块
-* Embedding 生成并落库
-* pgvector 相似度检索（<->）
-* ivfflat 索引优化，支持 10 万+向量
+- **知识库管理**：创建、编辑、删除知识库；上传/管理 Markdown 文档
+- **Agent 对话**：选择 Agent → 实时对话 → SSE 流式展示工具调用和 AI 回复
+- **工具配置**：为 Agent 选择启用的可选工具
 
-而且最关键的点是：用 PostgreSQL 一套体系把结构化数据和向量数据都管了（部署简单、成本低、事务一致性好）
+---
 
-4、**多模型支持（注册表模式 ChatClientRegistry**）
+## 改进记录
 
-项目不是“绑定一个模型”，而是：
+### 改进一：数据库查询两步式 SQL 生成
 
-* DeepSeek / 智谱 AI 可切换
-* 统一 ChatClient 接口
-* 注册表模式管理模型实例（解耦创建与使用）
-* 便于未来扩展更多模型
+**问题**：Agent 直接生成 SQL 时可能凭空捏造林名，导致查询失败。
 
-这里也涉及到：如果要加一个新模型要改哪些代码？怎么做到无侵入？
+**方案**：新增 `getTableSchema` 工具方法，Agent 的 SQL 生成流程变为：
 
-5、**SSE 实时通信（执行过程实时可视化**）
+1. 先调用 `getTableSchema` 查询 `information_schema.columns`，获取真实表结构和列名
+2. 结合用户自然语言提取查询条件和目标列
+3. 最后调用 `databaseQuery` 生成并执行 SQL
 
-很多 Agent 项目体验很差：用户不知道系统在干嘛。
+**涉及文件**：
 
-JChatMind 用 SSE 做了：
+| 文件 | 变更 |
+|------|------|
+| [DataBaseTools.java](eshop_chatmind/src/main/java/com/fx/eshop_chatmind/agent/tools/DataBaseTools.java) | 新增 `getTableSchema` 方法；更新 `databaseQuery` 的 Tool description |
 
-* 状态实时推送：THINKING / EXECUTING / DONE
-* 前端能实时看到“Agent 正在干啥”
-* 比 WebSocket 更简单，适合单向推送
+---
 
-这里会涉及到：SSE 和 WebSocket 区别？连接怎么管理？超时怎么处理？并发怎么扛？
+### 改进二：知识库自动同步（内容 Hash）
 
-这又是一套高质量八股 + 项目结合。
+**问题**：文档更新后需要手动重新上传才能更新向量库，容易遗漏。
 
+**方案**：基于文件内容 SHA-256 哈希检测变更，自动同步向量库：
 
-### 学完本项目可以掌握什么？
+- 文档上传时自动计算 SHA-256 哈希存入 metadata
+- 提供 `POST /api/knowledge-bases/{id}/sync` 端点触发同步
+- 根据 Hash 对比结果执行：新增分块 / 整体重建 / 清理删除
 
-* AI Agent 核心：Think-Execute 循环（多轮规划 + 多轮工具调用）+ 状态机 + 超时/错误处理
-* 工具调用体系：可扩展工具框架（固定/可选工具）、工具注册与调度、手动接管 Spring AI 工具执行流程
-* RAG 全链路：Markdown 解析与分块 → Embedding 入库 → pgvector 相似度检索（索引优化、SQL 调优）
-* 多模型架构设计：ChatClientRegistry 注册表模式，支持 DeepSeek/智谱等模型动态切换与扩展
-* 后端工程能力：Spring Boot 分层架构、RESTful API、统一异常/响应、MyBatis 复杂 SQL + 自定义 TypeHandler（vector）
-* 实时通信：SSE 服务端推送、连接管理、执行状态实时展示
-* 可量化成果表达：响应 <2s、并发 100+、检索准确率 85%+ 这种“面试官一眼懂”的指标怎么做、怎么写、怎么讲
+**涉及文件**：
 
+| 文件 | 变更 |
+|------|------|
+| [KnowledgeBaseSyncService.java](eshop_chatmind/src/main/java/com/fx/eshop_chatmind/service/KnowledgeBaseSyncService.java) | **新增** — 同步服务接口 + SyncResult record |
+| [KnowledgeBaseSyncServiceImpl.java](eshop_chatmind/src/main/java/com/fx/eshop_chatmind/service/impl/KnowledgeBaseSyncServiceImpl.java) | **新增** — 同步实现（Hash 比对、文档处理、分块管理） |
+| [DocumentDTO.java](eshop_chatmind/src/main/java/com/fx/eshop_chatmind/model/dto/DocumentDTO.java) | MetaData 新增 `contentHash` 字段 |
+| [DocumentFacadeServiceImpl.java](eshop_chatmind/src/main/java/com/fx/eshop_chatmind/service/impl/DocumentFacadeServiceImpl.java) | 上传时自动计算并保存文件 Hash |
+| [ChunkBgeM3Mapper.java](eshop_chatmind/src/main/java/com/fx/eshop_chatmind/mapper/ChunkBgeM3Mapper.java) | 新增 `deleteByDocId`、`deleteByKbId`、`selectByKbId` |
+| [ChunkBgeM3Mapper.xml](eshop_chatmind/src/main/resources/mapper/ChunkBgeM3Mapper.xml) | 对应 SQL |
+| [KnowledgeBaseController.java](eshop_chatmind/src/main/java/com/fx/eshop_chatmind/controller/KnowledgeBaseController.java) | 新增 `POST /api/knowledge-bases/{id}/sync` 端点 |
 
-### 加入知识星球获取本项目
+---
 
-加入[知识星球](https://programmercarl.com/other/kstar.html) 获取本项目。
+### 改进三：RAG 混合检索（向量 + BM25 + jieba 分词）
 
-加入[知识星球](https://mp.weixin.qq.com/s/iUiIRYlJvNqTsvfQXwK6FA)四大权益
+**问题**：纯向量语义检索可能遗漏精确关键词匹配，对专有名词/编号/代码等查询效果不佳。
 
-1、**高质量项目合集（C++ / Java / Go / Python / AI**）
+**方案**：在原有向量检索基础上加入 BM25 关键词检索，使用 jieba 分词器处理中文文本，通过 RRF 融合排序。
 
-可以获得星球里 **20+ 套项目专栏资料，不仅有详细讲解，而且都配套专属答疑服务**。
+```
+查询 → jieba分词 → BM25关键词检索 (top5)  ─┐
+     → bge-m3 Embedding → pgvector语义检索 (top5) ─┤→ RRF融合 → top5 结果
+```
 
-全网十分稀缺的  **C++ AI应用项目（AI应用服务平台），Go AI项目（GopherAI），Java AI项目（JChatMind**）。
+**BM25 参数**：k1=1.5, b=0.75，IDF 基于知识库内全量 chunk 计算。
 
-![](https://file1.kamacoder.com/i/web/2025-12-31_11-41-52.jpg)
+**涉及文件**：
 
-2、**精品八股PDF**
+| 文件 | 变更 |
+|------|------|
+| [pom.xml](eshop_chatmind/pom.xml) | 新增 `jieba-analysis:1.0.2` 依赖 |
+| [KeywordSearchService.java](eshop_chatmind/src/main/java/com/fx/eshop_chatmind/service/KeywordSearchService.java) | **新增** — 关键词检索接口 |
+| [KeywordSearchServiceImpl.java](eshop_chatmind/src/main/java/com/fx/eshop_chatmind/service/impl/KeywordSearchServiceImpl.java) | **新增** — BM25 + jieba 实现 |
+| [RagService.java](eshop_chatmind/src/main/java/com/fx/eshop_chatmind/service/RagService.java) | 新增 `hybridSearch` 方法 |
+| [RagServiceImpl.java](eshop_chatmind/src/main/java/com/fx/eshop_chatmind/service/impl/RagServiceImpl.java) | 实现向量+BM25的RRF融合检索 |
+| [KnowledgeTools.java](eshop_chatmind/src/main/java/com/fx/eshop_chatmind/agent/tools/KnowledgeTools.java) | 改用 `hybridSearch` 替代 `similaritySearch` |
 
-速记八股帮助众多录友们，短时间内快速上岸：
+---
 
-![](https://file1.kamacoder.com/i/web/2025-09-28_17-44-23.jpg)
+### 改进四：强制 Agent 优先查询外部数据源
 
-3、**独家资料 & 学习氛围**
+**问题**：Agent 可能依赖训练时的过时知识直接回答，而不是查询数据库或知识库获取最新数据。
 
-大厂面经、薪资报告、秋招投递总结表
+**方案**：重写 Agent 的 `thinkPrompt`，在决策层强制要求：
 
-![](https://file1.kamacoder.com/i/web/2025-09-28_18-26-47.jpg)
+1. 严禁在未查询外部数据源的情况下直接回答事实性问题
+2. 涉及数据支撑的问题，必须先调用 `getTableSchema` → `databaseQuery` 或 `KnowledgeTool`
+3. 只有纯闲聊和常识推理可以直接回答
 
-学习路线清晰，方向明确
+**涉及文件**：
 
-![](https://file1.kamacoder.com/i/web/2025-09-28_18-39-32.jpg)
+| 文件 | 变更 |
+|------|------|
+| [eshop_chatmind.java](eshop_chatmind/src/main/java/com/fx/eshop_chatmind/agent/eshop_chatmind.java) | 重写 `thinkPrompt`，加入强制查询规则和推荐流程 |
 
-星球里全是志同道合的伙伴，学习氛围 🔥🔥🔥
+---
 
-![](https://file1.kamacoder.com/i/web/2025-09-28_18-50-25.jpg)
+## Quick Start
 
-4、**卡哥 1v1 提问 & 简历修改**
+### 环境要求
 
-直接向我提问，面试疑惑、学习路线、职业规划一对一解答
+- Java 21+
+- Maven 3.8+
+- PostgreSQL 14+（需安装 pgvector 扩展）
+- Ollama（本地部署 bge-m3 embedding 模型）
+- Node.js 18+（前端）
 
-![](https://file1.kamacoder.com/i/web/2025-09-29_10-07-44.jpg)
+### 1. 初始化数据库
 
-加入[知识星球](https://mp.weixin.qq.com/s/iUiIRYlJvNqTsvfQXwK6FA)后如果不满意，三天内（72h）可全额退款！
+```sql
+CREATE EXTENSION IF NOT EXISTS vector;
 
+CREATE TABLE knowledge_base (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    name VARCHAR(255) NOT NULL,
+    description TEXT,
+    metadata JSONB,
+    created_at TIMESTAMP DEFAULT NOW(),
+    updated_at TIMESTAMP DEFAULT NOW()
+);
 
+CREATE TABLE document (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    kb_id UUID REFERENCES knowledge_base(id),
+    filename VARCHAR(255),
+    filetype VARCHAR(50),
+    size BIGINT,
+    metadata JSONB,
+    created_at TIMESTAMP DEFAULT NOW(),
+    updated_at TIMESTAMP DEFAULT NOW()
+);
+
+CREATE TABLE chunk_bge_m3 (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    kb_id UUID REFERENCES knowledge_base(id),
+    doc_id UUID REFERENCES document(id),
+    content TEXT,
+    metadata JSONB,
+    embedding vector(1024),
+    created_at TIMESTAMP DEFAULT NOW(),
+    updated_at TIMESTAMP DEFAULT NOW()
+);
+```
+
+### 2. 配置
+
+编辑 `src/main/resources/application.yaml`：
+
+```yaml
+spring:
+  datasource:
+    url: jdbc:postgresql://localhost:5432/eshop_chatmind
+    username: your_db_user
+    password: your_db_password
+  ai:
+    deepseek:
+      api-key: your_deepseek_api_key
+    zhipuai:
+      api-key: your_zhipu_api_key
+```
+
+### 3. 启动 Ollama
+
+```bash
+ollama pull bge-m3
+ollama serve
+```
+
+### 4. 启动后端
+
+```bash
+cd eshop_chatmind
+./mvnw spring-boot:run
+```
+
+后端默认运行在 `http://localhost:8080`。
+
+### 5. 启动前端
+
+```bash
+cd ui
+npm install
+npm run dev
+```
+
+前端默认运行在 `http://localhost:5173`。
+
+### 6. 使用流程
+
+1. 在「知识库」Tab 创建知识库，上传 Markdown 文档
+2. 调用 `POST /api/knowledge-bases/{id}/sync` 或等待自动同步
+3. 在「Agent」Tab 创建 Agent，配置模型、系统提示词、可选工具和可访问的知识库
+4. 在「对话」Tab 选择 Agent，开始对话
